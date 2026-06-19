@@ -53,24 +53,44 @@ class OpenVINODetector:
         print(f"  类别: {self.class_names}")
 
     def preprocess(self, frame):
-        """预处理: resize + normalize + CHW + batch (使用 cv2.dnn 加速)"""
+        """预处理: letterbox + normalize (与 ultralytics 训练一致)"""
+        h, w = frame.shape[:2]
+        # Letterbox: 等比缩放 + 填充，保持纵横比
+        r = min(self._w_in / w, self._h_in / h)
+        new_w, new_h = int(w * r), int(h * r)
+        dw = self._w_in - new_w
+        dh = self._h_in - new_h
+        dw2, dh2 = dw // 2, dh // 2
+
+        img = cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+        img = cv2.copyMakeBorder(img, dh2, dh - dh2, dw2, dw - dw2,
+                                 cv2.BORDER_CONSTANT, value=(114, 114, 114))
+
+        # 保存 letterbox 参数供 postprocess 使用
+        self._lb_ratio = r
+        self._lb_pad_left = dw2
+        self._lb_pad_top = dh2
+
         return cv2.dnn.blobFromImage(
-            frame, scalefactor=1/255.0, size=(self._w_in, self._h_in),
+            img, scalefactor=1/255.0, size=(self._w_in, self._h_in),
             swapRB=False, crop=False)
 
     def postprocess(self, output, frame_shape):
-        """解析 ultralytics OpenVINO 输出为 detections 列表
+        """解析 ultralytics OpenVINO 输出 + NMS
 
         output shape: (1, 6, N) 其中 6 = [cx, cy, w, h, cls0, cls1, ...]
         坐标在模型输入空间 (self._w_in × self._h_in)
         """
         h_frame, w_frame = frame_shape[:2]
-        detections = []
+        r = getattr(self, '_lb_ratio', 1.0)
+        pad_l = getattr(self, '_lb_pad_left', 0)
+        pad_t = getattr(self, '_lb_pad_top', 0)
 
         # (1, 6, N) → (N, 6): 每行 [cx, cy, w, h, cls0, cls1]
         data = output[0].T
         num_classes = data.shape[1] - 4
 
+        boxes_by_class = {}
         for row in data:
             cx, cy, w, h = float(row[0]), float(row[1]), float(row[2]), float(row[3])
             class_scores = row[4:]
@@ -81,35 +101,49 @@ class OpenVINODetector:
             if conf < self.conf:
                 continue
 
-            # cx,cy,w,h → x1,y1,x2,y2 (模型输入空间)
+            # cx,cy,w,h → x1,y1,x2,y2 (letterbox 空间)
             x1 = cx - w / 2
             y1 = cy - h / 2
             x2 = cx + w / 2
             y2 = cy + h / 2
 
-            # 缩放回原图坐标
-            x1 = int(x1 * w_frame / self._w_in)
-            y1 = int(y1 * h_frame / self._h_in)
-            x2 = int(x2 * w_frame / self._w_in)
-            y2 = int(y2 * h_frame / self._h_in)
+            # 从 letterbox 空间映射回原图
+            x1 = (x1 - pad_l) / r
+            y1 = (y1 - pad_t) / r
+            x2 = (x2 - pad_l) / r
+            y2 = (y2 - pad_t) / r
 
-            # clamp 到图像边界
-            x1, y1 = max(0, x1), max(0, y1)
-            x2, y2 = min(w_frame, x2), min(h_frame, y2)
+            # clamp
+            x1, y1 = max(0, int(x1)), max(0, int(y1))
+            x2, y2 = min(w_frame, int(x2)), min(h_frame, int(y2))
             if x2 <= x1 or y2 <= y1:
                 continue
 
-            cx_img = (x1 + x2) // 2
-            cy_img = (y1 + y2) // 2
-            class_name = self.class_names.get(class_id, str(class_id))
-
-            detections.append({
+            boxes_by_class.setdefault(class_id, []).append({
                 'bbox': [x1, y1, x2, y2],
-                'center': (cx_img, cy_img),
-                'confidence': conf,
-                'class_id': class_id,
-                'class_name': class_name,
+                'conf': conf,
             })
+
+        # NMS: 按类别去重
+        detections = []
+        for class_id, items in boxes_by_class.items():
+            boxes = [it['bbox'] for it in items]
+            confs = [it['conf'] for it in items]
+            indices = cv2.dnn.NMSBoxes(boxes, confs, self.conf, self.iou)
+            if len(indices) == 0:
+                continue
+            for i in indices.flatten():
+                x1, y1, x2, y2 = boxes[i]
+                cx_img = (x1 + x2) // 2
+                cy_img = (y1 + y2) // 2
+                class_name = self.class_names.get(class_id, str(class_id))
+                detections.append({
+                    'bbox': [x1, y1, x2, y2],
+                    'center': (cx_img, cy_img),
+                    'confidence': confs[i],
+                    'class_id': class_id,
+                    'class_name': class_name,
+                })
 
         return detections
 
@@ -137,6 +171,125 @@ class OpenVINODetector:
             detections: 同 YOLODetector 格式
             annotated_frame: 标注后的图像
         """
+        detections = self.infer(frame)
+        annotated = self.draw(frame, detections)
+        return detections, annotated
+
+class ONNXDetector:
+    """ONNX 检测器 (ultralytics 导出，内置 NMS)"""
+
+    def __init__(self, model_path="model/best.onnx", conf=0.15, iou=0.7):
+        self.conf = conf
+        self.iou = iou
+        self.class_names = {}
+
+        from openvino import Core
+        import os
+
+        print(f"ONNX 加载: {model_path}")
+        core = Core()
+        model = core.read_model(model_path)
+        self.compiled_model = core.compile_model(model, "CPU", {
+            "PERFORMANCE_HINT": "LATENCY",
+            "NUM_STREAMS": "AUTO",
+        })
+
+        self.input_key = self.compiled_model.input(0)
+        self.output_key = self.compiled_model.output(0)
+        self._h_in, self._w_in = 640, 640
+        print(f"  输入: [1,3,{self._h_in},{self._w_in}], 设备: CPU")
+
+        # 从 best.pt 读类别名
+        meta_path = os.path.join(os.path.dirname(model_path), "best1_openvino_model", "metadata.yaml")
+        if not os.path.exists(meta_path):
+            meta_path = os.path.join(os.path.dirname(model_path), "metadata.yaml")
+        if os.path.exists(meta_path):
+            import yaml
+            with open(meta_path) as f:
+                meta = yaml.safe_load(f)
+            names = meta.get("names", {})
+            self.class_names = {int(k): v for k, v in names.items()}
+        if not self.class_names:
+            self.class_names = {0: "class0", 1: "class1"}
+
+        print(f"  类别: {self.class_names}")
+
+    def preprocess(self, frame):
+        """Letterbox 预处理"""
+        h, w = frame.shape[:2]
+        r = min(self._w_in / w, self._h_in / h)
+        new_w, new_h = int(w * r), int(h * r)
+        dw = self._w_in - new_w
+        dh = self._h_in - new_h
+        dw2, dh2 = dw // 2, dh // 2
+
+        img = cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+        img = cv2.copyMakeBorder(img, dh2, dh - dh2, dw2, dw - dw2,
+                                 cv2.BORDER_CONSTANT, value=(114, 114, 114))
+
+        self._lb_ratio = r
+        self._lb_pad_left = dw2
+        self._lb_pad_top = dh2
+
+        return cv2.dnn.blobFromImage(
+            img, scalefactor=1/255.0, size=(self._w_in, self._h_in),
+            swapRB=False, crop=False)
+
+    def postprocess(self, output, frame_shape):
+        """ONNX 输出已是 [x1,y1,x2,y2,conf,cls]，只需映射回原图"""
+        h_frame, w_frame = frame_shape[:2]
+        r = getattr(self, '_lb_ratio', 1.0)
+        pad_l = getattr(self, '_lb_pad_left', 0)
+        pad_t = getattr(self, '_lb_pad_top', 0)
+
+        detections = []
+        for det in output[0]:
+            x1, y1, x2, y2, conf, cls_id = det
+            if conf < self.conf:
+                continue
+
+            x1 = int((x1 - pad_l) / r)
+            y1 = int((y1 - pad_t) / r)
+            x2 = int((x2 - pad_l) / r)
+            y2 = int((y2 - pad_t) / r)
+
+            x1, y1 = max(0, x1), max(0, y1)
+            x2, y2 = min(w_frame, x2), min(h_frame, y2)
+            if x2 <= x1 or y2 <= y1:
+                continue
+
+            class_id = int(cls_id)
+            class_name = self.class_names.get(class_id, str(class_id))
+            cx = (x1 + x2) // 2
+            cy = (y1 + y2) // 2
+
+            detections.append({
+                'bbox': [x1, y1, x2, y2],
+                'center': (cx, cy),
+                'confidence': float(conf),
+                'class_id': class_id,
+                'class_name': class_name,
+            })
+
+        return detections
+
+    def draw(self, frame, detections):
+        annotated = frame
+        for det in detections:
+            x1, y1, x2, y2 = det['bbox']
+            label = f"{det['class_name']} {det['confidence']:.0%}"
+            cv2.rectangle(annotated, (x1, y1), (x2, y2), (0, 255, 0), 2)
+            cv2.putText(annotated, label, (x1, y1 - 5),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+            cv2.circle(annotated, det['center'], 4, (0, 0, 255), -1)
+        return annotated
+
+    def infer(self, frame):
+        input_data = self.preprocess(frame)
+        result = self.compiled_model([input_data])[self.output_key]
+        return self.postprocess(result, frame.shape)
+
+    def detect(self, frame):
         detections = self.infer(frame)
         annotated = self.draw(frame, detections)
         return detections, annotated

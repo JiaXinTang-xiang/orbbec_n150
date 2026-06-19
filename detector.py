@@ -32,25 +32,10 @@ class YOLODetector:
         print(f"  设备: {self.device}")
         print(f"  类别: {self.model.names}")
 
-    def detect(self, frame):
-        """对单帧图像进行检测
-
-        参数:
-            frame: BGR 图像
-
-        返回:
-            detections: 检测结果列表，每项为 dict:
-                {
-                    'bbox': [x1, y1, x2, y2],
-                    'center': (cx, cy),
-                    'confidence': float,
-                    'class_id': int,
-                    'class_name': str
-                }
-            annotated_frame: 绘制了检测框的图像
-        """
-        results = self.model(frame, conf=self.conf, iou=self.iou, imgsz=self.imgsz, verbose=False)
-
+    def infer(self, frame):
+        """只推理，不画图 (异步模式用)"""
+        results = self.model(frame, conf=self.conf, iou=self.iou,
+                            imgsz=self.imgsz, verbose=False)
         detections = []
         for r in results:
             for box in r.boxes:
@@ -58,20 +43,38 @@ class YOLODetector:
                 conf = float(box.conf[0])
                 cls_id = int(box.cls[0])
                 cls_name = r.names[cls_id]
-
                 x1, y1, x2, y2 = xyxy
                 cx = (x1 + x2) // 2
                 cy = (y1 + y2) // 2
-
                 detections.append({
                     'bbox': [x1, y1, x2, y2],
                     'center': (cx, cy),
                     'confidence': conf,
                     'class_id': cls_id,
-                    'class_name': cls_name
+                    'class_name': cls_name,
                 })
+        return detections
 
-        # 绘制检测框
+    def detect(self, frame):
+        """检测单帧 (推理 + 画图) — 同步模式用"""
+        results = self.model(frame, conf=self.conf, iou=self.iou,
+                            imgsz=self.imgsz, verbose=False)
+        detections = []
+        for r in results:
+            for box in r.boxes:
+                xyxy = box.xyxy[0].cpu().numpy().astype(int)
+                conf = float(box.conf[0])
+                cls_id = int(box.cls[0])
+                cls_name = r.names[cls_id]
+                x1, y1, x2, y2 = xyxy
+                cx = (x1 + x2) // 2
+                cy = (y1 + y2) // 2
+                detections.append({
+                    'bbox': [x1, y1, x2, y2],
+                    'center': (cx, cy),
+                    'confidence': conf,
+                    'class_id': cls_id,
+                    'class_name': cls_name,
+                })
         annotated = results[0].plot()
-
         return detections, annotated

@@ -21,7 +21,7 @@ import numpy as np
 from pathlib import Path
 from collections import deque
 from orbbec_camera import OrbbecCamera
-from detector_openvino import OpenVINODetector
+from detector_openvino import OpenVINODetector, ONNXDetector
 from pid_controller import PIDController
 from anti_light import filter_detections
 
@@ -30,13 +30,13 @@ try:
 except ImportError:
     SerialCommunicator = None
 
-# ===== 检测器后端: "openvino" 或 "pytorch" =====
-DETECTOR_BACKEND = "openvino"
+# ===== 检测器后端: "onnx", "openvino" 或 "pytorch" =====
+DETECTOR_BACKEND = "pytorch"
 
 
 # ===== 配置 =====
-MODEL_PATH = "model/best1_openvino_model/"  # OpenVINO 模型路径
-CONF = 0.7  # 推理侧阈值，<0.7 的目标不输出
+MODEL_PATH = "model/best3.pt"  # PyTorch 模型路径
+CONF = 0.15  # OpenVINO 输出原始分数偏低，用较低阈值 + NMS 去重
 IOU = 0.7
 IMAGE_WIDTH = 640
 IMAGE_HEIGHT = 480
@@ -162,7 +162,9 @@ def main():
     camera = OrbbecCamera(width=IMAGE_WIDTH, height=IMAGE_HEIGHT, fps=FPS)
 
     # 初始化检测器
-    if DETECTOR_BACKEND == "openvino":
+    if DETECTOR_BACKEND == "onnx":
+        base_detector = ONNXDetector(model_path=MODEL_PATH, conf=CONF, iou=IOU)
+    elif DETECTOR_BACKEND == "openvino":
         base_detector = OpenVINODetector(model_path=MODEL_PATH, conf=CONF, iou=IOU)
     else:
         from detector import YOLODetector
@@ -209,11 +211,9 @@ def main():
             # 拉取最新检测结果
             detections, t_det = detector.get()
 
-            # 始终以当前帧为底图，画上最新检测框 (置信度 ≥70%)
+            # 始终以当前帧为底图，画上最新检测框
             annotated = color_image
             for det in detections:
-                if det['confidence'] < 0.7:
-                    continue
                 x1, y1, x2, y2 = det['bbox']
                 label = f"{det['class_name']} {det['confidence']:.0%}"
                 cv2.rectangle(annotated, (x1, y1), (x2, y2), (0, 255, 0), 2)
@@ -237,11 +237,9 @@ def main():
                     color_image, detections, min_variance=MIN_VARIANCE
                 )
 
-            # 处理检测结果 (只处理置信度 ≥70% 的目标)
+            # 处理检测结果
             point_3d = None
             for det in detections:
-                if det['confidence'] < 0.7:
-                    continue
                 cx, cy = det['center']
                 cls_name = det['class_name']
                 conf = det['confidence']
