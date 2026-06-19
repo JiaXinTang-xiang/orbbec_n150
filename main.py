@@ -46,7 +46,7 @@ USE_PID = False
 USE_SERIAL = False
 SERIAL_PORT = "/dev/ttyUSB0"
 MIN_VARIANCE = 100
-SKIP_FRAMES = 1  # 异步模式下每帧提交，worker 忙时自动跳过
+SKIP_FRAMES = 3  # 每 N 帧检测一次，降低 CPU 负载
 
 # PID 参数
 pid_x = PIDController(kp=0.3, ki=0.0, kd=0.1, deadband=10)
@@ -204,14 +204,12 @@ def main():
             if color_image is None:
                 continue
 
-            # 提交异步检测（后台线程处理，非阻塞）
+            # 提交异步检测（非阻塞）
             if frame_idx % SKIP_FRAMES == 0:
                 detector.submit(color_image)
 
-            # 拉取最新检测结果
+            # 拉取最新检测结果，画在当前帧上
             detections, t_det = detector.get()
-
-            # 始终以当前帧为底图，画上最新检测框
             annotated = color_image
             for det in detections:
                 x1, y1, x2, y2 = det['bbox']
