@@ -168,6 +168,9 @@ def main():
             if frame_idx % SKIP_FRAMES == 0:
                 detector.submit(color_image)
 
+            # 保存原始帧，供 filter_detections 使用
+            raw_color = color_image.copy()
+
             # 拉取最新检测结果，画在当前帧上
             detections, t_det = detector.get()
             annotated = color_image
@@ -189,10 +192,10 @@ def main():
                 fps_t0 = time.time()
                 fps_counter = 0
 
-            # 抗灯光过滤
+            # 抗灯光过滤 (用原始帧，避免被画的框影响)
             if detections:
                 detections = filter_detections(
-                    color_image, detections, min_variance=MIN_VARIANCE
+                    raw_color, detections, min_variance=MIN_VARIANCE
                 )
 
             # 处理检测结果

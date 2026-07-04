@@ -500,10 +500,10 @@ class OrbbecCamera:
         """
         depth_m = depth_image.astype(np.float32) * self.depth_scale / 1000.0
         mask = (depth_m >= min_depth) & (depth_m <= max_depth)
-        # 直接在原数组上操作，避免 copy；convertScaleAbs 内部会分配新数组
-        depth_image[~mask] = 0
+        masked = depth_image.copy()
+        masked[~mask] = 0
         return cv2.applyColorMap(
-            cv2.convertScaleAbs(depth_image, alpha=0.03), cv2.COLORMAP_JET)
+            cv2.convertScaleAbs(masked, alpha=0.03), cv2.COLORMAP_JET)
 
     def get_3d_point(self, x, y, depth_frame_data, sample_radius=5):
         """像素坐标 -> 3D 世界坐标 (以米为单位)
