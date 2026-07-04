@@ -25,16 +25,11 @@ from detector_openvino import OpenVINODetector, ONNXDetector
 from pid_controller import PIDController
 from anti_light import filter_detections
 
-try:
-    from serial_comm import SerialCommunicator
-except ImportError:
-    SerialCommunicator = None
-
 # ===== 检测器后端: "onnx", "openvino" 或 "pytorch" =====
-DETECTOR_BACKEND = "pytorch"
+DETECTOR_BACKEND = "openvino"
 
 # ===== 配置 =====
-MODEL_PATH = "model/best4.pt"  # PyTorch 模型路径
+MODEL_PATH = "model/best4_openvino_model/"  # OpenVINO 模型路径
 CONF = 0.5
 IOU = 0.7
 IMAGE_WIDTH = 640
@@ -42,17 +37,14 @@ IMAGE_HEIGHT = 480
 FPS = 30
 SHOW_DEPTH = True
 USE_PID = False
-USE_SERIAL = False
-SERIAL_PORT = "/dev/ttyUSB0"
+USE_SERIAL = True
+SERIAL_PORT = "/dev/ttyACM0"  # STM32 USB CDC 虚拟串口
 MIN_VARIANCE = 100
-SKIP_FRAMES = 3  # 每 N 帧检测一次，降低 CPU 负载
+SKIP_FRAMES = 2 # 每 N 帧检测一次，降低 CPU 负载
 
 # PID 参数
 pid_x = PIDController(kp=0.3, ki=0.0, kd=0.1, deadband=10)
 pid_y = PIDController(kp=0.3, ki=0.0, kd=0.1, deadband=10)
-
-# 串口数据帧 (19 字节，保留 MTI 格式)
-msg = [0, 127, 127, 127, 127, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
 
 def save_intrinsics(camera):
     """保存相机内参到 JSON 文件"""
@@ -68,36 +60,6 @@ def save_intrinsics(camera):
     with open('intrinsics.json', 'w') as f:
         json.dump(params, f, indent=2)
     print("相机内参已保存到 intrinsics.json")
-
-
-def update_serial_msg(ser, cx, cy, point_3d, use_pid, center_x, center_y):
-    """更新串口数据帧并发送
-
-    Args:
-        ser: SerialCommunicator 实例
-        cx, cy: 目标像素坐标
-        point_3d: 三维坐标 dict
-        use_pid: 是否使用 PID
-        center_x, center_y: 图像中心坐标
-    """
-    if use_pid:
-        output_x = int(pid_x.update(cx, target=center_x))
-        output_y = int(pid_y.update(cy, target=center_y))
-    else:
-        output_x = int(cx * 255 / IMAGE_WIDTH)
-        output_y = int(cy * 255 / IMAGE_HEIGHT)
-
-    # 映射到 0-255
-    output_x = max(0, min(255, output_x))
-    output_y = max(0, min(255, output_y))
-
-    # 更新数据帧
-    msg[1] = output_x
-    msg[2] = output_y
-    msg[3] = 127  # 右摇杆 X (未使用)
-    msg[4] = 127  # 右摇杆 Y (未使用)
-
-    ser.send(msg)
 
 
 class AsyncDetector:
@@ -175,10 +137,10 @@ def main():
     # 串口初始化
     ser = None
     if USE_SERIAL:
-        ser = SerialCommunicator()
-        ser.list_ports()
-        if not ser.open(port=SERIAL_PORT):
-            print("串口打开失败，继续运行 (无串口模式)")
+        from vision_comm import VisionSerial
+        ser = VisionSerial(port=SERIAL_PORT)
+        if not ser.open():
+            print("视觉串口打开失败，继续运行 (无串口模式)")
             ser = None
 
     print("\n按 q 退出")
@@ -211,7 +173,7 @@ def main():
             annotated = color_image
             for det in detections:
                 x1, y1, x2, y2 = det['bbox']
-                label = f"{det['class_name']} {det['confidence']:.0%}"
+                label = f"{det['class_id']}:{det['class_name']} {det['confidence']:.0%}"
                 cv2.rectangle(annotated, (x1, y1), (x2, y2), (0, 255, 0), 2)
                 cv2.putText(annotated, label, (x1, y1 - 5),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
@@ -252,7 +214,7 @@ def main():
                 if point_3d:
                     # 在图像上标注信息
                     info = (
-                        f"{cls_name} {conf:.0%} "
+                        f"{det['class_id']}:{cls_name} {conf:.0%} "
                         f"| {point_3d['distance']:.2f}m"
                     )
                     cv2.putText(annotated, info, (cx - 60, cy - 20),
@@ -271,14 +233,13 @@ def main():
                         end="\r", flush=True
                     )
 
-                    # 串口发送
-                    if ser:
-                        update_serial_msg(
-                            ser, cx, cy, point_3d,
-                            USE_PID, center_x, center_y
-                        )
+                    # 把 3D 坐标写入检测结果供串口发送
+                    det['x_m'] = point_3d.get('x', 0.0)
+                    det['y_m'] = point_3d.get('y', 0.0)
+                    det['z_m'] = point_3d.get('z', 0.0)
+                    det['distance_m'] = point_3d.get('distance', 0.0)
                 else:
-                    # 检测到目标但深度无效 - 打印调试信息
+                    # 检测到目标但深度无效
                     if depth_frame_data is not None:
                         r = 5
                         h, w = depth_frame_data.shape
@@ -286,19 +247,17 @@ def main():
                         x1, x2 = max(0, cx - r), min(w, cx + r + 1)
                         region = depth_frame_data[y1:y2, x1:x2]
                         nz = region[region > 0]
-                        print(
-                            f"检测到 {cls_name} @({cx},{cy}) "
-                            f"采样区域非零像素: {len(nz)}/{region.size}",
-                            end="\r", flush=True
-                        )
+                        det['x_m'] = 0.0
+                        det['y_m'] = 0.0
+                        det['z_m'] = 0.0
+                        det['distance_m'] = 0.0
 
                 # 只处理第一个检测到的目标
                 break
 
-            # 无检测目标时发送中立值
-            if not detections and ser:
-                msg[1], msg[2], msg[3], msg[4] = 127, 127, 127, 127
-                ser.send(msg)
+            # 串口发送视觉数据
+            if ser:
+                ser.send_vision(detections)
 
             # 显示图像
             t2 = time.time()
@@ -333,8 +292,6 @@ def main():
         detector.stop()
         # 发送停止指令
         if ser:
-            msg[1], msg[2], msg[3], msg[4] = 127, 127, 127, 127
-            ser.send(msg)
             ser.close()
 
         camera.stop()

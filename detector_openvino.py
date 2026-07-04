@@ -76,76 +76,72 @@ class OpenVINODetector:
             swapRB=False, crop=False)
 
     def postprocess(self, output, frame_shape):
-        """解析 ultralytics OpenVINO 输出 + NMS
-
-        output shape: (1, 6, N) 其中 6 = [cx, cy, w, h, cls0, cls1, ...]
-        坐标在模型输入空间 (self._w_in × self._h_in)
+        """解析 OpenVINO 输出，自动识别格式：
+        [1, 300, 6] → 已含 NMS (best4等), 每行 [x1,y1,x2,y2,conf,cls]
+        [1, 6, N]   → 原始输出, 需转置+sigmoid+NMS
         """
         h_frame, w_frame = frame_shape[:2]
         r = getattr(self, '_lb_ratio', 1.0)
         pad_l = getattr(self, '_lb_pad_left', 0)
         pad_t = getattr(self, '_lb_pad_top', 0)
-
-        # (1, 6, N) → (N, 6): 每行 [cx, cy, w, h, cls0, cls1]
-        data = output[0].T
-        num_classes = data.shape[1] - 4
-
-        boxes_by_class = {}
-        for row in data:
-            cx, cy, w, h = float(row[0]), float(row[1]), float(row[2]), float(row[3])
-            raw_scores = row[4:]
-            # sigmoid: 原始 logits → 置信度
-            class_scores = 1 / (1 + np.exp(-raw_scores))
-
-            class_id = int(np.argmax(class_scores))
-            conf = float(class_scores[class_id])
-
-            if conf < self.conf:
-                continue
-
-            # cx,cy,w,h → x1,y1,x2,y2 (letterbox 空间)
-            x1 = cx - w / 2
-            y1 = cy - h / 2
-            x2 = cx + w / 2
-            y2 = cy + h / 2
-
-            # 从 letterbox 空间映射回原图
-            x1 = (x1 - pad_l) / r
-            y1 = (y1 - pad_t) / r
-            x2 = (x2 - pad_l) / r
-            y2 = (y2 - pad_t) / r
-
-            # clamp
-            x1, y1 = max(0, int(x1)), max(0, int(y1))
-            x2, y2 = min(w_frame, int(x2)), min(h_frame, int(y2))
-            if x2 <= x1 or y2 <= y1:
-                continue
-
-            boxes_by_class.setdefault(class_id, []).append({
-                'bbox': [x1, y1, x2, y2],
-                'conf': conf,
-            })
-
-        # NMS: 按类别去重
         detections = []
-        for class_id, items in boxes_by_class.items():
-            boxes = [it['bbox'] for it in items]
-            confs = [it['conf'] for it in items]
-            indices = cv2.dnn.NMSBoxes(boxes, confs, self.conf, self.iou)
-            if len(indices) == 0:
-                continue
-            for i in indices.flatten():
-                x1, y1, x2, y2 = boxes[i]
-                cx_img = (x1 + x2) // 2
-                cy_img = (y1 + y2) // 2
-                class_name = self.class_names.get(class_id, str(class_id))
+
+        if output.shape[1] == 300:
+            # 已处理格式 [1, 300, 6]，直接用
+            for det in output[0]:
+                x1, y1, x2, y2, conf, cls_id = det
+                if conf < self.conf:
+                    continue
+                x1 = max(0, int((x1 - pad_l) / r))
+                y1 = max(0, int((y1 - pad_t) / r))
+                x2 = min(w_frame, int((x2 - pad_l) / r))
+                y2 = min(h_frame, int((y2 - pad_t) / r))
+                if x2 <= x1 or y2 <= y1:
+                    continue
+                cls_id = int(cls_id)
                 detections.append({
                     'bbox': [x1, y1, x2, y2],
-                    'center': (cx_img, cy_img),
-                    'confidence': confs[i],
-                    'class_id': class_id,
-                    'class_name': class_name,
+                    'center': ((x1 + x2) // 2, (y1 + y2) // 2),
+                    'confidence': float(conf),
+                    'class_id': cls_id,
+                    'class_name': self.class_names.get(cls_id, str(cls_id)),
                 })
+        else:
+            # 原始格式 [1, 6, N]
+            data = output[0].T
+            boxes_by_class = {}
+            for row in data:
+                cx, cy, w, h = float(row[0]), float(row[1]), float(row[2]), float(row[3])
+                raw_scores = row[4:]
+                class_scores = 1 / (1 + np.exp(-raw_scores))
+                class_id = int(np.argmax(class_scores))
+                conf = float(class_scores[class_id])
+                if conf < self.conf:
+                    continue
+                x1 = (cx - w / 2 - pad_l) / r
+                y1 = (cy - h / 2 - pad_t) / r
+                x2 = (cx + w / 2 - pad_l) / r
+                y2 = (cy + h / 2 - pad_t) / r
+                x1, y1 = max(0, int(x1)), max(0, int(y1))
+                x2, y2 = min(w_frame, int(x2)), min(h_frame, int(y2))
+                if x2 <= x1 or y2 <= y1:
+                    continue
+                boxes_by_class.setdefault(class_id, ([], []))
+                boxes_by_class[class_id][0].append([x1, y1, x2 - x1, y2 - y1])
+                boxes_by_class[class_id][1].append(conf)
+            for cls_id, (boxes, confs) in boxes_by_class.items():
+                idx = cv2.dnn.NMSBoxes(boxes, confs, self.conf, self.iou)
+                if len(idx) == 0:
+                    continue
+                for i in idx.flatten():
+                    bx, by, br, bb = boxes[i]
+                    detections.append({
+                        'bbox': [bx, by, bx + br, by + bb],
+                        'center': (bx + br // 2, by + bb // 2),
+                        'confidence': confs[i],
+                        'class_id': cls_id,
+                        'class_name': self.class_names.get(cls_id, str(cls_id)),
+                    })
 
         return detections
 
