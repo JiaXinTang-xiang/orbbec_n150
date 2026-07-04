@@ -143,6 +143,11 @@ def main():
             print("视觉串口打开失败，继续运行 (无串口模式)")
             ser = None
 
+    # 加载反馈提示图片
+    overlay_img = cv2.imread("aruco_5x5_id3.png")
+    if overlay_img is not None:
+        overlay_img = cv2.resize(overlay_img, (80, 80))
+
     print("\n按 q 退出")
     print("=" * 40)
 
@@ -151,6 +156,7 @@ def main():
         detections = []
         annotated = None
         fps_t0 = time.time()
+        show_overlay = False
         fps_counter = 0
         fps_display = 0.0
         t_cam = t_disp = 0.0
@@ -258,9 +264,12 @@ def main():
                 # 只处理第一个检测到的目标
                 break
 
-            # 串口发送视觉数据
+            # 串口发送 + 读反馈
             if ser:
                 ser.send_vision(detections)
+                for fb in ser.read_feedback():
+                    if fb['cmd'] == 0x81:
+                        show_overlay = (fb['flags'] & 0x04) != 0
 
             # 显示图像
             t2 = time.time()
@@ -276,6 +285,13 @@ def main():
                 for i, txt in enumerate(info_lines):
                     cv2.putText(annotated, txt, (10, 30 + i * 25),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+                # 32 反馈收到视觉 → 显示 overlay 图片
+                if show_overlay and overlay_img is not None:
+                    h, w = annotated.shape[:2]
+                    oh, ow = overlay_img.shape[:2]
+                    y0, x0 = h - oh - 10, w - ow - 10
+                    overlay_bgr = cv2.cvtColor(overlay_img, cv2.COLOR_GRAY2BGR)
+                    annotated[y0:y0+oh, x0:x0+ow] = overlay_bgr
             cv2.imshow("Orbbec + YOLO", annotated if annotated is not None else color_image)
 
             # 显示深度图

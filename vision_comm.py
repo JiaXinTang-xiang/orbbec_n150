@@ -115,6 +115,31 @@ class VisionSerial:
             except serial.SerialException:
                 self._ser = None  # 触发下次重连
 
+    def read_feedback(self):
+        """非阻塞读取32发来的反馈帧
+
+        帧格式: [0xAA][cmd][val][CRC]  4字节, CRC = XOR(0xAA, cmd, val)
+        cmd=0x81: 状态标志  val: bit0=底盘 bit1=继电器 bit2=收到视觉
+        cmd=0x82: 复位事件
+        返回: [{'cmd': 0x81, 'flags': N}, ...]
+        """
+        frames = []
+        if self._ser is None or not self._ser.is_open:
+            return frames
+        with self._lock:
+            while self._ser.in_waiting >= 4:
+                head = self._ser.read(1)
+                if head[0] != 0xAA:
+                    continue
+                cmd = self._ser.read(1)[0]
+                if cmd not in (0x81, 0x82):
+                    continue
+                val = self._ser.read(1)[0]
+                crc = self._ser.read(1)[0]
+                if crc == (0xAA ^ cmd ^ val):
+                    frames.append({'cmd': cmd, 'flags': val})
+        return frames
+
     def close(self):
         if self._ser and self._ser.is_open:
             self._ser.close()
