@@ -58,20 +58,43 @@ class VisionSerial:
         self.baudrate = baudrate
         self._ser = None
         self._lock = threading.Lock()
+        self._reconnect_skip = 0  # 重连冷却计数器
 
-    def open(self) -> bool:
+    def _do_open(self) -> bool:
         try:
             self._ser = serial.Serial(self.port, self.baudrate, timeout=0.1)
-            print(f"[VisionSerial] {self.port}")
+            print(f"[VisionSerial] 已连接 {self.port}")
             return True
-        except serial.SerialException as e:
-            print(f"[VisionSerial] 失败: {e}")
+        except serial.SerialException:
             return False
 
-    def send_vision(self, detections: list):
-        if self._ser is None or not self._ser.is_open:
+    def open(self) -> bool:
+        return self._do_open()
+
+    def _try_reconnect(self):
+        """断线后尝试重连，每秒最多试一次"""
+        if self._reconnect_skip > 0:
+            self._reconnect_skip -= 1
             return
+        self._reconnect_skip = 30  # 30 帧 ≈ 1 秒后再试
+        if self._ser:
+            try:
+                self._ser.close()
+            except Exception:
+                pass
+            self._ser = None
+        if self._do_open():
+            print("[VisionSerial] 已重连")
+        else:
+            self._reconnect_skip = 60  # 失败则等 2 秒
+
+    def send_vision(self, detections: list):
         with self._lock:
+            if self._ser is None or not self._ser.is_open:
+                self._try_reconnect()
+                if self._ser is None:
+                    return
+
             if detections:
                 d = detections[0]
                 cx, cy = d['center']
@@ -90,7 +113,7 @@ class VisionSerial:
             try:
                 self._ser.write(data)
             except serial.SerialException:
-                pass
+                self._ser = None  # 触发下次重连
 
     def close(self):
         if self._ser and self._ser.is_open:
