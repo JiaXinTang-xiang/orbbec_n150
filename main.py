@@ -26,10 +26,10 @@ from pid_controller import PIDController
 from anti_light import filter_detections
 
 # ===== 检测器后端: "onnx", "openvino" 或 "pytorch" =====
-DETECTOR_BACKEND = "openvino"
+DETECTOR_BACKEND = "pytorch"
 
 # ===== 配置 =====
-MODEL_PATH = "model/best4_openvino_model/"  # OpenVINO 模型路径
+MODEL_PATH = "model/best4.pt"  # PyTorch 模型路径
 CONF = 0.5
 IOU = 0.7
 IMAGE_WIDTH = 640
