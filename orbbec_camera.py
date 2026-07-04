@@ -373,6 +373,13 @@ class OrbbecCamera:
         for _ in range(50):
             fs = _ob_pipeline_wait_for_frameset(self._pipeline, 100, byref(e))
             if fs:
+                # 必须递归释放子帧，否则 SDK buffer pool 会耗尽
+                df = _ob_frameset_depth_frame(fs, byref(e))
+                cf = _ob_frameset_color_frame(fs, byref(e))
+                if df:
+                    _ob_delete_frame(df, byref(e))
+                if cf:
+                    _ob_delete_frame(cf, byref(e))
                 _ob_delete_frame(fs, byref(e))
                 break
 
