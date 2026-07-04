@@ -93,7 +93,9 @@ class OpenVINODetector:
         boxes_by_class = {}
         for row in data:
             cx, cy, w, h = float(row[0]), float(row[1]), float(row[2]), float(row[3])
-            class_scores = row[4:]
+            raw_scores = row[4:]
+            # sigmoid: 原始 logits → 置信度
+            class_scores = 1 / (1 + np.exp(-raw_scores))
 
             class_id = int(np.argmax(class_scores))
             conf = float(class_scores[class_id])
@@ -236,41 +238,59 @@ class ONNXDetector:
             swapRB=False, crop=False)
 
     def postprocess(self, output, frame_shape):
-        """ONNX 输出已是 [x1,y1,x2,y2,conf,cls]，只需映射回原图"""
+        """ONNX 输出 [1,6,8400] 原始格式 → 转置 + NMS"""
         h_frame, w_frame = frame_shape[:2]
         r = getattr(self, '_lb_ratio', 1.0)
         pad_l = getattr(self, '_lb_pad_left', 0)
         pad_t = getattr(self, '_lb_pad_top', 0)
 
-        detections = []
-        for det in output[0]:
-            x1, y1, x2, y2, conf, cls_id = det
+        # (1, 6, N) → (N, 6): [cx, cy, w, h, cls0, cls1]
+        data = output[0].T
+        boxes_by_class = {}
+
+        for row in data:
+            cx, cy, bw, bh = float(row[0]), float(row[1]), float(row[2]), float(row[3])
+            raw_scores = row[4:]
+            # sigmoid: 原始 logits → 置信度
+            scores = 1 / (1 + np.exp(-raw_scores))
+            cls_id = int(np.argmax(scores))
+            conf = float(scores[cls_id])
             if conf < self.conf:
                 continue
+
+            x1 = cx - bw / 2
+            y1 = cy - bh / 2
+            x2 = cx + bw / 2
+            y2 = cy + bh / 2
 
             x1 = int((x1 - pad_l) / r)
             y1 = int((y1 - pad_t) / r)
             x2 = int((x2 - pad_l) / r)
             y2 = int((y2 - pad_t) / r)
-
             x1, y1 = max(0, x1), max(0, y1)
             x2, y2 = min(w_frame, x2), min(h_frame, y2)
             if x2 <= x1 or y2 <= y1:
                 continue
 
-            class_id = int(cls_id)
-            class_name = self.class_names.get(class_id, str(class_id))
-            cx = (x1 + x2) // 2
-            cy = (y1 + y2) // 2
+            if cls_id not in boxes_by_class:
+                boxes_by_class[cls_id] = ([], [])
+            boxes_by_class[cls_id][0].append([x1, y1, x2 - x1, y2 - y1])
+            boxes_by_class[cls_id][1].append(conf)
 
-            detections.append({
-                'bbox': [x1, y1, x2, y2],
-                'center': (cx, cy),
-                'confidence': float(conf),
-                'class_id': class_id,
-                'class_name': class_name,
-            })
-
+        detections = []
+        for cls_id, (boxes, confs) in boxes_by_class.items():
+            indices = cv2.dnn.NMSBoxes(boxes, confs, self.conf, self.iou)
+            if len(indices) == 0:
+                continue
+            for i in indices.flatten():
+                bx, by, br, bb = boxes[i]
+                detections.append({
+                    'bbox': [bx, by, bx + br, by + bb],
+                    'center': (bx + br // 2, by + bb // 2),
+                    'confidence': confs[i],
+                    'class_id': cls_id,
+                    'class_name': self.class_names.get(cls_id, str(cls_id)),
+                })
         return detections
 
     def draw(self, frame, detections):

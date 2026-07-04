@@ -33,10 +33,9 @@ except ImportError:
 # ===== 检测器后端: "onnx", "openvino" 或 "pytorch" =====
 DETECTOR_BACKEND = "pytorch"
 
-
 # ===== 配置 =====
-MODEL_PATH = "model/best3.pt"  # PyTorch 模型路径
-CONF = 0.15  # OpenVINO 输出原始分数偏低，用较低阈值 + NMS 去重
+MODEL_PATH = "model/best4.pt"  # PyTorch 模型路径
+CONF = 0.5
 IOU = 0.7
 IMAGE_WIDTH = 640
 IMAGE_HEIGHT = 480
@@ -54,7 +53,6 @@ pid_y = PIDController(kp=0.3, ki=0.0, kd=0.1, deadband=10)
 
 # 串口数据帧 (19 字节，保留 MTI 格式)
 msg = [0, 127, 127, 127, 127, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
-
 
 def save_intrinsics(camera):
     """保存相机内参到 JSON 文件"""
