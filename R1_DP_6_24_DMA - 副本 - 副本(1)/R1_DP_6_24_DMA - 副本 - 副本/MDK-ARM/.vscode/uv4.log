@@ -1,0 +1,17 @@
+*** Using Compiler 'V5.06 update 5 (build 528)', folder: 'D:\STM32\ARM\ARMCC\Bin'
+Build target 'chassis'
+compiling driver_contorl.c...
+..\application\driver_contorl.h(51): warning:  #1-D: last line of file ends without a newline
+  #endif
+../controller/pidd.h(128): warning:  #1-D: last line of file ends without a newline
+  		
+..\application\driver_contorl.c(34): warning:  #188-D: enumerated type mixed with another type
+  MotorController motor_ctrl[8] = {0};
+..\application\driver_contorl.c(591): warning:  #1-D: last line of file ends without a newline
+  }
+..\application\driver_contorl.c: 4 warnings, 0 errors
+linking...
+Program Size: Code=18912 RO-data=456 RW-data=620 ZI-data=5788  
+FromELF: creating hex file...
+"chassis\chassis.axf" - 0 Error(s), 4 Warning(s).
+Build Time Elapsed:  00:00:05

@@ -1,0 +1,14 @@
+chassis\chassismath.o: ..\controller\chassisMath.c
+chassis\chassismath.o: ..\controller\chassisMath.h
+chassis\chassismath.o: ..\application\struct_typedef.h
+chassis\chassismath.o: G:\keil5\ARM\ARMCC\Bin\..\include\math.h
+chassis\chassismath.o: ../Middlewares/ST/ARM/DSP/Inc/arm_math.h
+chassis\chassismath.o: ../Drivers/CMSIS/Include/cmsis_compiler.h
+chassis\chassismath.o: G:\keil5\ARM\ARMCC\Bin\..\include\stdint.h
+chassis\chassismath.o: ../Drivers/CMSIS/Include/cmsis_armcc.h
+chassis\chassismath.o: G:\keil5\ARM\ARMCC\Bin\..\include\string.h
+chassis\chassismath.o: G:\keil5\ARM\ARMCC\Bin\..\include\float.h
+chassis\chassismath.o: G:\keil5\ARM\ARMCC\Bin\..\include\limits.h
+chassis\chassismath.o: ..\application\remote_behaviou.h
+chassis\chassismath.o: ..\application\remote_control.h
+chassis\chassismath.o: ..\bsp\boards\bsp_rc.h

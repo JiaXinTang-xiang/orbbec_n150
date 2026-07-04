@@ -38,7 +38,7 @@ FPS = 30
 SHOW_DEPTH = True
 USE_PID = False
 USE_SERIAL = True
-SERIAL_PORT = "/dev/ttyACM0"  # STM32 USB CDC 虚拟串口
+SERIAL_PORT = "/dev/ttyACM0" #STM32 USB CDC 虚拟串口
 MIN_VARIANCE = 100
 SKIP_FRAMES = 2 # 每 N 帧检测一次，降低 CPU 负载
 
@@ -143,10 +143,8 @@ def main():
             print("视觉串口打开失败，继续运行 (无串口模式)")
             ser = None
 
-    # 加载反馈提示图片
+    # 加载反馈提示图片（收到32反馈时单独窗口显示）
     overlay_img = cv2.imread("aruco_5x5_id3.png")
-    if overlay_img is not None:
-        overlay_img = cv2.resize(overlay_img, (80, 80))
 
     print("\n按 q 退出")
     print("=" * 40)
@@ -264,12 +262,12 @@ def main():
                 # 只处理第一个检测到的目标
                 break
 
-            # 串口发送 + 读反馈
+            # 串口发送 + 读反馈（收到任何32数据就显示图片）
             if ser:
                 ser.send_vision(detections)
-                for fb in ser.read_feedback():
-                    if fb['cmd'] == 0x81:
-                        show_overlay = (fb['flags'] & 0x04) != 0
+                fb_list = ser.read_feedback()
+                if fb_list:
+                    show_overlay = True
 
             # 显示图像
             t2 = time.time()
@@ -285,13 +283,11 @@ def main():
                 for i, txt in enumerate(info_lines):
                     cv2.putText(annotated, txt, (10, 30 + i * 25),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
-                # 32 反馈收到视觉 → 显示 overlay 图片
+                # 32 反馈 → 单独窗口显示图片
                 if show_overlay and overlay_img is not None:
-                    h, w = annotated.shape[:2]
-                    oh, ow = overlay_img.shape[:2]
-                    y0, x0 = h - oh - 10, w - ow - 10
-                    overlay_bgr = cv2.cvtColor(overlay_img, cv2.COLOR_GRAY2BGR)
-                    annotated[y0:y0+oh, x0:x0+ow] = overlay_bgr
+                    cv2.namedWindow("F4 Feedback", cv2.WINDOW_NORMAL)
+                    cv2.resizeWindow("F4 Feedback", 640, 640)
+                    cv2.imshow("F4 Feedback", overlay_img)
             cv2.imshow("Orbbec + YOLO", annotated if annotated is not None else color_image)
 
             # 显示深度图

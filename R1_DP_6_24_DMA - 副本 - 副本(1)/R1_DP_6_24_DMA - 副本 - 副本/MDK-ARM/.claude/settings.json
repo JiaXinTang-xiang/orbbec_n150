@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(mkdir -p \"d:/32/F4/DAIMA/R1/R1/R1_6_13/User\")",
+      "Read(//d/32/F4/yaokonqi/YKQ/VET6_TFT_10_6_20_JS_pro_max_trea - 副本 - 副本/Hardware/**)"
+    ],
+    "additionalDirectories": [
+      "d:\\32\\F4\\DAIMA\\R1\\R1\\R1_6_13",
+      "D:\\32\\F4\\yaokonqi\\YKQ\\VET6_TFT_10_6_20_JS_pro_max_trea - 副本\\Hardware",
+      "D:\\32\\F4\\yaokonqi\\YKQ\\VET6_TFT_10_6_20_JS_pro_max_trea - 副本 - 副本\\Hardware",
+      "D:\\32\\F4\\yaokonqi\\YKQ\\VET6_TFT_10_6_20_JS_pro_max_trea - 副本 - 副本\\User"
+    ]
+  }
+}
